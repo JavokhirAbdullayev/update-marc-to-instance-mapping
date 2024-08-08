@@ -68,6 +68,7 @@ function main() {
   fi
 
   # Login by admin
+  echo "Logging in as $username..."
   login_body="{\"username\":\"${username}\",\"password\":\"${password}\"}"
   login_url="${okapi_url}/authn/login"
 
@@ -80,9 +81,12 @@ function main() {
   then
     echo "Cannot login. Shutting down the script."
     return 1
+  else
+    echo "Login successful. Token retrieved."
   fi
 
   # GET Instances count
+  echo "Retrieving total instance count..."
   get_instances_count_url="${okapi_url}/instance-storage/instances?limit=0"
 
   total_records=$(curl -X GET "${get_instances_count_url}" --silent \
@@ -97,6 +101,8 @@ function main() {
   then
     echo "The number of total records is equal to 0."
     exit 1
+  else
+    echo "Total records found: $total_records"
   fi
 
   if [[ -z $limit ]]
@@ -116,6 +122,7 @@ function main() {
   fi
 
   # GET All Instance ids
+  echo "Retrieving instance IDs with limit $limit and offset $offset..."
   get_all_instance_ids_url="${okapi_url}/instance-storage/instances?limit=${limit}&offset=${offset}"
   get_all_instance_ids_url=$(echo $get_all_instance_ids_url | tr -d ' ')
 
@@ -128,11 +135,13 @@ function main() {
   read -a instances <<< $instances
 
   total_count=${#instances[@]}
+  echo "Total instances to process: $total_count"
 
   for i in "${instances[@]}"
   do
     instance_id="$(cut -d',' -f1 <<< $i)"
     version="$(cut -d',' -f2 <<< $i)"
+    echo "Processing instance ID: $instance_id, version: $version"
     processMarcRecord $okapi_url $tenant $token $instance_id $version $release
   done
 
@@ -159,7 +168,7 @@ function processMarcRecord() {
   local version=$5
   local release=$6
 
-  # GET SRS MARC-Bib Record
+  echo "Fetching MARC-Bib record for instance ID: $instance_id..."
   get_srs_marc_record_url="${okapi_url}/change-manager/parsedRecords?externalId=${instance_id}"
 
   local change_manager_body=$(curl -X GET "${get_srs_marc_record_url}" --silent \
@@ -172,9 +181,12 @@ function processMarcRecord() {
     then
       change_manager_body="$(jq --arg version "$version" '. += {"relatedRecordVersion":$version}' <<< $change_manager_body)"
     fi
+    echo "MARC-Bib record fetched successfully."
+    echo $change_manager_body >> output.json
   else
     total_error_count=$((total_error_count+1))
-    echo "$instance_id" - "$change_manager_body" >> results.txt
+    echo "Error fetching MARC-Bib record for instance ID: $instance_id. Logging error."
+    echo "$instance_id - $change_manager_body" >> results.txt
     return 1
   fi
 
@@ -183,33 +195,39 @@ function processMarcRecord() {
   if [[ -z "$record_id" ]]
   then
     total_error_count=$((total_error_count+1))
-    echo "$instance_id" - "RecordId is empty" >> results.txt
+    echo "Record ID is empty for instance ID: $instance_id. Logging error."
+    echo "$instance_id - RecordId is empty" >> results.txt
     return 1
   fi
 
-  # PUT SRS MARC-Bib Record
+  echo "Updating MARC-Bib record with ID: $record_id..."
   put_srs_marc_record_url="${okapi_url}/change-manager/parsedRecords/${record_id}"
 
   local response=$(curl -X PUT "${put_srs_marc_record_url}" --silent \
     -H "X-Okapi-Tenant: $tenant" \
     -H "X-Okapi-Token: $token" \
     -H "Content-Type: application/json" \
+    -H "Accept-Charset: utf-8" \
     -w "%{http_code}\n" \
     -d "${change_manager_body}")
 
   if [[ $response == "202" ]]
   then
     total_succeeded_count=$((total_succeeded_count+1))
+    echo "Record ID: $record_id updated successfully."
   else
     total_error_count=$((total_error_count+1))
+    echo "Error updating record ID: $record_id. Response code: $response. Logging error."
   fi
-  echo "$instance_id" - "ok" >> results.txt
+  echo "$instance_id - ok" >> results.txt
 }
 
 # Main entry point
 SECONDS=0
 
+echo "Starting script execution..."
 main $1 $2 $3 $4 $5 $6
 
 duration=$SECONDS
+echo "Script execution completed."
 echo "$(( $duration / 3600 )) hours, $((( $duration / 60 ) % 60 )) minutes and $(( $duration % 60 )) seconds elapsed."
